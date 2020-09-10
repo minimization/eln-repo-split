@@ -69,7 +69,7 @@ def load_settings():
     parser = argparse.ArgumentParser()
     parser.add_argument("configs", help="Directory with YAML configuration files. Only files ending with '.yaml' are accepted.")
     parser.add_argument("output", help="Directory to contain the output.")
-    parser.add_argument("--use-cache", dest="use_cache", action='store_true', help="Use local data instead of pulling Content Resolver. Saves a lot of time! Needs a 'cache_data.json' file at the same location as the script is at.)
+    parser.add_argument("--use-cache", dest="use_cache", action='store_true', help="Use local data instead of pulling Content Resolver. Saves a lot of time! Needs a 'cache_data.json' file at the same location as the script is at.")
     args = parser.parse_args()
 
     settings["configs"] = args.configs
