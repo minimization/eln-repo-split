@@ -76,7 +76,7 @@ def load_settings():
     settings["output"] = args.output
     settings["use_cache"] = args.use_cache
 
-    settings["allowed_arches"] = ["armv7hl","aarch64","ppc64le","s390x","x86_64"]
+    settings["allowed_arches"] = ["aarch64","ppc64le","s390x","x86_64"]
 
     settings["repos"] = {
         "appstream": ["aarch64", "ppc64le", "s390x", "x86_64"],
@@ -393,7 +393,7 @@ def main():
     query = Query(data, configs, settings)
   
 
-    arch = "x86_64"
+    
 
     all_packages = {}
 
@@ -418,31 +418,32 @@ def main():
     #       * requires
     #       * target_repo (just the default: appstream)
 
-    for workload_id, workload in data["workloads"][arch].items():
+    for arch in query.settings["allowed_arches"]:
+        for workload_id, workload in data["workloads"][arch].items():
 
-        relations_dict = workload["data"]["pkg_relations"]
-        if not relations_dict:
-            continue
+            relations_dict = workload["data"]["pkg_relations"]
+            if not relations_dict:
+                continue
 
-        for pkg_id, pkg_relations in relations_dict.items():
-            pkg_name = pkg_id_to_name(pkg_id)
-            pkg_required_by = pkg_relations["required_by"]
+            for pkg_id, pkg_relations in relations_dict.items():
+                pkg_name = pkg_id_to_name(pkg_id)
+                pkg_required_by = pkg_relations["required_by"]
 
-            pkg_required_by = [pkg_id_to_name(pkg_id) for pkg_id in pkg_required_by]
+                pkg_required_by = [pkg_id_to_name(pkg_id) for pkg_id in pkg_required_by]
 
-            # 1/ record that this package is required by all the other ones
-            if pkg_name not in all_packages:
-                _init_new_pkg(pkg_name, all_packages, query)
-            all_packages[pkg_name]["required_by"].update(pkg_required_by)
+                # 1/ record that this package is required by all the other ones
+                if pkg_name not in all_packages:
+                    _init_new_pkg(pkg_name, all_packages, query)
+                all_packages[pkg_name]["required_by"].update(pkg_required_by)
 
-            # 2/ record for all the other ones that they require this package
-            for other_pkg_id in pkg_required_by:
-                other_pkg_name = pkg_id_to_name(other_pkg_id)
+                # 2/ record for all the other ones that they require this package
+                for other_pkg_id in pkg_required_by:
+                    other_pkg_name = pkg_id_to_name(other_pkg_id)
 
-                if other_pkg_name not in all_packages:
-                    _init_new_pkg(other_pkg_name, all_packages, query)
-                
-                all_packages[other_pkg_name]["requires"].add(pkg_name)
+                    if other_pkg_name not in all_packages:
+                        _init_new_pkg(other_pkg_name, all_packages, query)
+                    
+                    all_packages[other_pkg_name]["requires"].add(pkg_name)
 
     print ("  Found {} packages".format(
         len(all_packages)
