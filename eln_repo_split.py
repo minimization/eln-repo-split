@@ -379,7 +379,6 @@ def main():
     settings = load_settings()
 
     configs = get_configs(settings)
-    dump_data("cache_configs.json", configs)
 
     if settings["use_cache"]:
         data = load_data("cache_data.json")
@@ -387,15 +386,6 @@ def main():
         data = get_data(settings)
         dump_data("cache_data.json", data)
     
-
-
-    
-    #configs = load_data("cache_configs.json")
-
-    #data = get_data(settings)
-    #dump_data("cache_data.json", data)
-    data = load_data("cache_data.json")
-
     query = Query(data, configs, settings)
   
 
