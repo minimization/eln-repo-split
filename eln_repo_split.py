@@ -177,6 +177,10 @@ def get_configs(settings):
         # Only accept yaml files
         if not yml_file.endswith(".yaml"):
             continue
+
+        # Skip those massive buildroot configs!
+        if yml_file in ["buildroot-eln.yaml", "buildroot-prototype-eln.yaml", "eln-buildroot-workload.yaml", "prototype-eln-buildroot-workload.yaml"]:
+            continue
         
         document_id = yml_file.split(".yaml")[0]
 
