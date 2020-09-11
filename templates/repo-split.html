@@ -1,0 +1,109 @@
+{% extends "layout.html" %}
+
+{% block content %}
+
+<div class="container-fluid">
+    <nav aria-label="breadcrumb">
+        <ol class="breadcrumb">
+            <li class="breadcrumb-item"><a href="./views.html">Views</a></li>
+            <li class="breadcrumb-item"><a href="./view--eln-package-set.html">ELN Package Set</a></li>
+            <li class="breadcrumb-item active" aria-current="page">Repo Split</li>
+        </ol>
+    </nav>
+
+
+    <h1>ELN Package Set <small class="text-muted">Repo Split</small></h1>
+
+    <div id="loading">
+        <div>
+            <br><br><br><br>
+            <div class="text-center">
+                <div class="spinner-border" role="status">
+                    <span class="sr-only">Loading...</span>
+                </div>
+            </div>
+            <br><br><br>
+        </div>
+    </div>
+
+
+    <br>
+
+    <table id="table_packages" class="table-packages">
+        <thead>
+            <tr class="sort_control_row">
+                <th>Name</th>
+                <th>Main Repository</th>
+                <th>Addon Repositories</th>
+                <th>Status</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for pkg_name, pkg in query.all_pkgs.items() %}
+            <tr class="">
+                <td>
+                    {{pkg_name}}
+                </td>
+                <td>
+                    {% if pkg.target_repo %}
+                    {{ pkg.target_repo }}
+                    {% else %}
+                    -
+                    {% endif %}
+                </td>
+                <td>
+                    {% if pkg.addon_repos %}
+                    {{ pkg.addon_repos | join(", ") }}
+                    {% else %}
+                    -
+                    {% endif %}
+                </td>
+                <td>
+                    {% if pkg.target_repo and  pkg.addon_repos%}
+                    Warning
+                    {% else %}
+                    OK
+                    {% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+<script>
+    $(document).ready(function () {
+
+        $('#table_packages').DataTable({
+            paging: false,
+            info: false,
+            initComplete: function () {
+                var input = $('.dataTables_filter input').unbind(),
+                    self = this.api(),
+                    $searchButton = $('<button>')
+                        .text('search')
+                        .click(function () {
+                            self.search(input.val()).draw();
+                        }),
+                    $clearButton = $('<button>')
+                        .text('clear')
+                        .click(function () {
+                            input.val('');
+                            $searchButton.click();
+                        });
+                $(document).keypress(function (event) {
+                    if (event.which == 13) {
+                        $searchButton.click();
+                    }
+                });
+
+                $('.dataTables_filter').append($searchButton, $clearButton);
+            }
+        });
+
+        var loadingDiv = document.getElementById("loading");
+        loadingDiv.parentNode.removeChild(loadingDiv);
+    });
+</script>
+
+{% endblock %}
