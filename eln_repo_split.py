@@ -1,6 +1,6 @@
 #!/usr/bin/python3
 
-import argparse, yaml, tempfile, os, json, datetime, dnf, urllib.request, sys, jinja2, subprocess
+import argparse, yaml, tempfile, os, json, datetime, urllib.request, sys, jinja2, subprocess
 from functools import lru_cache
 
 try:
@@ -73,6 +73,7 @@ def pkg_placeholder_name_to_id(placeholder_name):
 def id_to_url_slug(any_id):
     return any_id.replace(":", "--")
 
+
 def load_settings():
     settings = {}
 
@@ -80,7 +81,7 @@ def load_settings():
     parser.add_argument("configs", help="Directory with YAML configuration files. Only files ending with '.yaml' are accepted.")
     parser.add_argument("output", help="Directory to contain the output.")
     parser.add_argument("--use-cache", dest="use_cache", action='store_true', help="Use local data instead of pulling Content Resolver. Saves a lot of time! Needs a 'cache_data.json' file at the same location as the script is at.")
-    parser.add_argument("--html", dest="html", action='store_true', help="Generate html pages. This needs the 'python3-jinja2' package installed.")
+    parser.add_argument("--html", dest="html", action='store_true', help="Generate html pages instead of txt files.")
     args = parser.parse_args()
 
     settings["configs"] = args.configs
@@ -103,7 +104,7 @@ def load_settings():
     }
 
     settings["addons"] = ["addon-ha", "addon-nfv", "addon-rt", "addon-rs", "addon-sap", "addon-saphana"]
-    return(settings)
+    return settings
 
 
 
@@ -231,7 +232,47 @@ def get_configs(settings):
     return configs
 
 
-def get_data(settings):
+def get_data(content_resolver_query):
+    # Does the same thing as get_data_download_from_content_resolver
+    # except it doesn't download the data from tiny.distro.builders,
+    # but takes it from the Query object from feedback-pipeline.py
+    # (Good for calling this script from feedback-pipeline.py)
+
+    data = {}
+    data["pkgs"] = {}
+    data["workloads"] = {}
+
+    view_conf_id = "view-eln"
+
+    all_workload_ids = set()
+
+    arches = content_resolver_query.settings["allowed_arches"]
+    
+    for arch in arches:
+        data["pkgs"][arch] = content_resolver_query.pkgs_in_view(view_conf_id, arch)
+
+        workload_ids = content_resolver_query.workloads_in_view(view_conf_id, arch)
+        all_workload_ids.update(workload_ids)
+
+        data["workloads"][arch] = {}
+        for workload_id in workload_ids:
+            data["workloads"][arch][workload_id] = {}
+    
+    for workload_id in all_workload_ids:
+        arch = workload_id.split(":")[-1]
+
+        output_data = {}
+        output_data["date"] = ""
+        output_data["id"] = workload_id
+        output_data["type"] = "workload"
+        output_data["data"] = content_resolver_query.data["workloads"][workload_id]
+        output_data["pkg_query"] = content_resolver_query.workload_pkgs_id(workload_id)
+
+        data["workloads"][arch][workload_id] = output_data
+
+    return data
+
+def get_data_download_from_content_resolver(settings):
 
     log("")
     log("###############################################################################")
@@ -332,6 +373,12 @@ class Query():
         self.settings = settings
         self.repos = {}
         self.all_pkgs = {}
+        self.warning_output = ""
+    
+    def warning_log(self, msg):
+        print(msg)
+        self.warning_output += msg
+        self.warning_output += "\n"
     
     def _init_new_pkg(self, pkg_name):
         pkg = {}
@@ -344,6 +391,7 @@ class Query():
         pkg["target_repo"] = "appstream"
 
         pkg["addon_repos"] = set()
+        pkg["pkgs_preventing_addon_separation"] = set()
 
         pkg["repositories"] = []
 
@@ -519,16 +567,18 @@ class Query():
 
         
         # Print errors
+        # also add this data to the individual packages
         for addon_name, addon in unpullable_addons.items():
-            print("")
-            print("WARNING: The {} addon can't be pulled out.".format(addon_name))
-            print("         That's because:")
+            self.warning_log("")
+            self.warning_log("WARNING: The {} addon can't be pulled out.".format(addon_name))
+            self.warning_log("         That's because:")
             for pkg_name, dependent_pkg_names in addon.items():
-                print("           - {} listed in addon is required by:".format(pkg_name))
+                self.warning_log("           - {} listed in addon is required by:".format(pkg_name))
                 for dependent_pkg_name in dependent_pkg_names:
                     dependent_pkg = self.all_pkgs[dependent_pkg_name]
-                    print("                - {} ({})".format(dependent_pkg_name, dependent_pkg["target_repo"]))
-                print("         (Adding {} to {} should fix the problem.)".format(
+                    self.all_pkgs[pkg_name]["pkgs_preventing_addon_separation"].add((dependent_pkg_name, dependent_pkg["target_repo"]))
+                    self.warning_log("                - {} ({})".format(dependent_pkg_name, dependent_pkg["target_repo"]))
+                self.warning_log("         (Adding {} to {} should fix the problem.)".format(
                     ", ".join(dependent_pkg_names),
                     addon_name
                 ))
@@ -643,7 +693,7 @@ def _generate_html_page(template_name, template_data, page_name, settings):
     log("  Done!")
     log("")
 
-def generate_pages(query):
+def generate_pages(query, include_content_resolver_breadcrumb=False):
     log("")
     log("###############################################################################")
     log("### Generating html pages! ####################################################")
@@ -658,12 +708,39 @@ def generate_pages(query):
     log("  Done!")
     log("")
 
-
+    view_id = "view-eln"
+    for repo in query.settings["repos"]:
+        template_data = {
+            "query": query,
+            "view_id": view_id,
+            "page_repo": repo,
+            "include_content_resolver_breadcrumb": include_content_resolver_breadcrumb
+        }
+        page_name = "repo-split--{view_id}--{repo}".format(
+            view_id=view_id,
+            repo=repo
+        )
+        _generate_html_page("repo-split", template_data, page_name, query.settings)
+    
+    page_name = "repo-split--{view_id}".format(
+            view_id=view_id
+        )
     template_data = {
-        "query": query
-    }
-    _generate_html_page("repo-split", template_data, "repo-split--eln-package-set", query.settings)
+            "view_id": view_id,
+            "query": query,
+            "include_content_resolver_breadcrumb": include_content_resolver_breadcrumb
+        }
+    _generate_html_page("repo-split-overview", template_data, page_name, query.settings)
 
+    
+    log("Outputting data files...")
+    for repo in query.settings["repos"]:
+        filename = "repo-split--view-eln--{repo}".format(
+            repo=repo
+        )
+        _generate_a_flat_list_file(sorted(query.repos[repo]), filename, query.settings)
+    log("  Done!")
+    log("")
 
 
 
@@ -680,20 +757,18 @@ def main():
     if settings["use_cache"]:
         data = load_data("cache_data.json")
     else:
-        data = get_data(settings)
+        data = get_data_download_from_content_resolver(settings)
         dump_data("cache_data.json", data)
     
     query = Query(data, configs, settings)
     query.sort_out_pkgs()
 
-    output_txt_files(query)
-
-    print_summary(query)
-
     if query.settings["html"]:
         generate_pages(query)
+    else:
+        output_txt_files(query)
     
-
+    print_summary(query)
     
 
 

@@ -79,6 +79,15 @@ div.main-menu {
   padding-bottom: 60px;
 }
 
+div.main-menu a {
+  color: #444;
+  font-weight: bolder;
+}
+
+div.main-menu a.active {
+  background-color: #444!important;
+}
+
 
 
 /*  General table */
