@@ -318,6 +318,196 @@ class Query():
         self.data = data
         self.configs = configs
         self.settings = settings
+        self.repos = {}
+    
+    def sort_out_pkgs(self):
+
+        all_packages = {}
+
+
+        self.repos["baseos"] = {}
+        self.repos["appstream"] = {}
+        self.repos["addon-ha"] = {}
+        self.repos["addon-nfv"] = {}
+        self.repos["addon-rt"] = {}
+        self.repos["addon-rs"] = {}
+        self.repos["addon-sap"] = {}
+        self.repos["addon-saphana"] = {}
+        self.repos["buildroot-only"] = {}
+        self.repos["crb"] = {}
+
+
+
+        print("")
+        print("Processing...")
+
+        ### 1/ Initiate all_packages and set them up with:
+        #       * name
+        #       * required_by
+        #       * requires
+        #       * target_repo (just the default: appstream)
+
+        for arch in self.settings["allowed_arches"]:
+            for workload_id, workload in self.data["workloads"][arch].items():
+
+                relations_dict = workload["data"]["pkg_relations"]
+                if not relations_dict:
+                    continue
+
+                for pkg_id, pkg_relations in relations_dict.items():
+                    pkg_name = pkg_id_to_name(pkg_id)
+                    pkg_required_by = pkg_relations["required_by"]
+
+                    pkg_required_by = [pkg_id_to_name(pkg_id) for pkg_id in pkg_required_by]
+
+                    # 1/ record that this package is required by all the other ones
+                    if pkg_name not in all_packages:
+                        _init_new_pkg(pkg_name, all_packages, self)
+                    all_packages[pkg_name]["required_by"].update(pkg_required_by)
+
+                    # 2/ record for all the other ones that they require this package
+                    for other_pkg_id in pkg_required_by:
+                        other_pkg_name = pkg_id_to_name(other_pkg_id)
+
+                        if other_pkg_name not in all_packages:
+                            _init_new_pkg(other_pkg_name, all_packages, self)
+                        
+                        all_packages[other_pkg_name]["requires"].add(pkg_name)
+
+        print ("  Found {} packages".format(
+            len(all_packages)
+        ))
+
+
+        ### 2/ Set up all_packages with:
+        #       * musts
+        #       * wants
+
+        for pkg_name, pkg in all_packages.items():
+
+            for config_id, config in self.configs["configs"].items():
+
+                # baseos
+                if pkg_name in config["baseos"]["must"]:
+                    pkg["musts"]["baseos"].add(config_id)
+                
+                if pkg_name in config["baseos"]["want"]:
+                    pkg["wants"]["baseos"].add(config_id)
+
+                # appstream
+                if pkg_name in config["appstream"]["want"]:
+                    pkg["wants"]["appstream"].add(config_id)
+                
+                # addons
+                for addon in self.settings["addons"]:
+                    if pkg_name in config[addon]["must"]:
+                        pkg["musts"][addon].add(config_id)
+
+        ### 3/ Set up all_packages with:
+        #       * pulls          
+        #       * target_repo (just the default: appstream)
+
+        ##  3.1/  baseos vs. appstream split
+        baseos_pkg_names = set()
+        while True:
+            package_moved = False
+            for pkg_name, pkg in all_packages.items():
+
+                # is it in a baseos list?
+                #  -> move it
+                if pkg["musts"]["baseos"] and pkg["target_repo"] == "appstream":
+                    # Moveing to baseos
+                    package_moved = True
+                    pkg["target_repo"] = "baseos"
+
+                # does something in baseos require it?
+                #  -> move it
+                for repo_pkg_name, repo_pkg in all_packages.items():
+                    if repo_pkg["target_repo"] != "baseos":
+                        continue
+
+                    if pkg_name in repo_pkg["requires"] and pkg["target_repo"] == "appstream":
+                        # Moveing to baseos
+                        package_moved = True
+                        pkg["target_repo"] = "baseos"
+            
+            if not package_moved:
+                break
+        
+
+        ##  3.2/  pulling out addons
+
+        addon_pkg_names = set()
+        unpullable_addons = {}
+
+        # Assign addon repos to packages
+        for pkg_name, pkg in all_packages.items():
+
+            for addon in self.settings["addons"]:
+
+                if pkg["musts"][addon]:
+                    pkg["addon_repos"].add(addon)
+                    addon_pkg_names.add(pkg_name)
+        
+        # Look if addon packages are not required by something in
+        # baseos or appstream. If so, flag those addons as "unpullable"
+        for pkg_name in addon_pkg_names:
+            pkg = all_packages[pkg_name]
+
+            for dependent_pkg_name in pkg["required_by"]:
+                if dependent_pkg_name not in addon_pkg_names:
+                    for addon in pkg["addon_repos"]:
+                        if addon not in unpullable_addons:
+                            unpullable_addons[addon] = {}
+                        
+                        if pkg_name not in unpullable_addons[addon]:
+                            unpullable_addons[addon][pkg_name] = set()
+                        
+                        unpullable_addons[addon][pkg_name].add(dependent_pkg_name)
+        
+        # Mark addon packages in addons that can be pulled out 
+        # as not being in either appstream or baseos
+        for pkg_name in addon_pkg_names:
+            pkg = all_packages[pkg_name]
+            for addon in pkg["addon_repos"]:
+                if addon not in unpullable_addons:
+                    pkg["target_repo"] = None
+
+        
+        # Print errors
+        for addon_name, addon in unpullable_addons.items():
+            print("")
+            print("WARNING: The {} addon can't be pulled out.".format(addon_name))
+            print("         That's because:")
+            for pkg_name, dependent_pkg_names in addon.items():
+                print("           - {} listed in addon is required by:".format(pkg_name))
+                for dependent_pkg_name in dependent_pkg_names:
+                    dependent_pkg = all_packages[dependent_pkg_name]
+                    print("                - {} ({})".format(dependent_pkg_name, dependent_pkg["target_repo"]))
+                print("         (Adding {} to {} should fix the problem.)".format(
+                    ", ".join(dependent_pkg_names),
+                    addon_name
+                ))
+
+
+        ### Populate repos
+        for pkg_name, pkg in all_packages.items():
+
+            if pkg["target_repo"]:
+                repo = pkg["target_repo"]
+                pkg["repositories"].append(repo)
+                self.repos[repo][pkg_name] = pkg
+            
+            for addon in self.settings["addons"]:
+                if addon in pkg["addon_repos"]:
+                    self.repos[addon][pkg_name] = pkg
+                    pkg["repositories"].append(addon)
+            
+
+        print("  Done!")
+        print("")
+
+
 
 ###############################################################################
 ### Sorting to target_repos ###################################################
@@ -373,6 +563,36 @@ def _generate_a_flat_list_file(data_list, file_name, settings):
 
 
 
+    
+
+
+
+
+
+def output_txt_files(query):
+
+    log("Generating txt files...")
+
+    for repo in query.settings["repos"]:
+        _generate_a_flat_list_file(sorted(query.repos[repo]), repo, query.settings)
+
+    
+    log("Done!")
+    log("")
+
+
+def print_summary(query):
+
+    print("Results:")
+    print("  baseos: {}".format(len(query.repos["baseos"])))
+    print("  appstream: {}".format(len(query.repos["appstream"])))
+
+    for addon in query.settings["addons"]:
+        print("  {addon} : {num}".format(
+            addon=addon,
+            num=len(query.repos[addon])
+        ))
+
 
 ###############################################################################
 ### Main ######################################################################
@@ -391,208 +611,14 @@ def main():
         dump_data("cache_data.json", data)
     
     query = Query(data, configs, settings)
-  
+    query.sort_out_pkgs()
 
+    output_txt_files(query)
+
+    print_summary(query)
     
 
-    all_packages = {}
-
-    repos = {}
-    repos["baseos"] = {}
-    repos["appstream"] = {}
-    repos["addon-ha"] = {}
-    repos["addon-nfv"] = {}
-    repos["addon-rt"] = {}
-    repos["addon-rs"] = {}
-    repos["addon-sap"] = {}
-    repos["addon-saphana"] = {}
-    repos["buildroot-only"] = {}
-    repos["crb"] = {}
-
-    print("")
-    print("Processing...")
-
-    ### 1/ Initiate all_packages and set them up with:
-    #       * name
-    #       * required_by
-    #       * requires
-    #       * target_repo (just the default: appstream)
-
-    for arch in query.settings["allowed_arches"]:
-        for workload_id, workload in data["workloads"][arch].items():
-
-            relations_dict = workload["data"]["pkg_relations"]
-            if not relations_dict:
-                continue
-
-            for pkg_id, pkg_relations in relations_dict.items():
-                pkg_name = pkg_id_to_name(pkg_id)
-                pkg_required_by = pkg_relations["required_by"]
-
-                pkg_required_by = [pkg_id_to_name(pkg_id) for pkg_id in pkg_required_by]
-
-                # 1/ record that this package is required by all the other ones
-                if pkg_name not in all_packages:
-                    _init_new_pkg(pkg_name, all_packages, query)
-                all_packages[pkg_name]["required_by"].update(pkg_required_by)
-
-                # 2/ record for all the other ones that they require this package
-                for other_pkg_id in pkg_required_by:
-                    other_pkg_name = pkg_id_to_name(other_pkg_id)
-
-                    if other_pkg_name not in all_packages:
-                        _init_new_pkg(other_pkg_name, all_packages, query)
-                    
-                    all_packages[other_pkg_name]["requires"].add(pkg_name)
-
-    print ("  Found {} packages".format(
-        len(all_packages)
-    ))
-
-
-    ### 2/ Set up all_packages with:
-    #       * musts
-    #       * wants
-
-    for pkg_name, pkg in all_packages.items():
-
-        for config_id, config in query.configs["configs"].items():
-
-            # baseos
-            if pkg_name in config["baseos"]["must"]:
-                pkg["musts"]["baseos"].add(config_id)
-            
-            if pkg_name in config["baseos"]["want"]:
-                pkg["wants"]["baseos"].add(config_id)
-
-            # appstream
-            if pkg_name in config["appstream"]["want"]:
-                pkg["wants"]["appstream"].add(config_id)
-            
-            # addons
-            for addon in query.settings["addons"]:
-                if pkg_name in config[addon]["must"]:
-                    pkg["musts"][addon].add(config_id)
-
-    ### 3/ Set up all_packages with:
-    #       * pulls          
-    #       * target_repo (just the default: appstream)
-
-    ##  3.1/  baseos vs. appstream split
-    baseos_pkg_names = set()
-    while True:
-        package_moved = False
-        for pkg_name, pkg in all_packages.items():
-
-            # is it in a baseos list?
-            #  -> move it
-            if pkg["musts"]["baseos"] and pkg["target_repo"] == "appstream":
-                # Moveing to baseos
-                package_moved = True
-                pkg["target_repo"] = "baseos"
-
-            # does something in baseos require it?
-            #  -> move it
-            for repo_pkg_name, repo_pkg in all_packages.items():
-                if repo_pkg["target_repo"] != "baseos":
-                    continue
-
-                if pkg_name in repo_pkg["requires"] and pkg["target_repo"] == "appstream":
-                    # Moveing to baseos
-                    package_moved = True
-                    pkg["target_repo"] = "baseos"
-        
-        if not package_moved:
-            break
     
-
-    ##  3.2/  pulling out addons
-
-    addon_pkg_names = set()
-    unpullable_addons = {}
-
-    # Assign addon repos to packages
-    for pkg_name, pkg in all_packages.items():
-
-        for addon in query.settings["addons"]:
-
-            if pkg["musts"][addon]:
-                pkg["addon_repos"].add(addon)
-                addon_pkg_names.add(pkg_name)
-    
-    # Look if addon packages are not required by something in
-    # baseos or appstream. If so, flag those addons as "unpullable"
-    for pkg_name in addon_pkg_names:
-        pkg = all_packages[pkg_name]
-
-        for dependent_pkg_name in pkg["required_by"]:
-            if dependent_pkg_name not in addon_pkg_names:
-                for addon in pkg["addon_repos"]:
-                    if addon not in unpullable_addons:
-                        unpullable_addons[addon] = {}
-                    
-                    if pkg_name not in unpullable_addons[addon]:
-                        unpullable_addons[addon][pkg_name] = set()
-                    
-                    unpullable_addons[addon][pkg_name].add(dependent_pkg_name)
-    
-    # Mark addon packages in addons that can be pulled out 
-    # as not being in either appstream or baseos
-    for pkg_name in addon_pkg_names:
-        pkg = all_packages[pkg_name]
-        for addon in pkg["addon_repos"]:
-            if addon not in unpullable_addons:
-                pkg["target_repo"] = None
-
-    
-    # Print errors
-    for addon_name, addon in unpullable_addons.items():
-        print("")
-        print("WARNING: The {} addon can't be pulled out.".format(addon_name))
-        print("         That's because:")
-        for pkg_name, dependent_pkg_names in addon.items():
-            print("           - {} listed in addon is required by:".format(pkg_name))
-            for dependent_pkg_name in dependent_pkg_names:
-                dependent_pkg = all_packages[dependent_pkg_name]
-                print("                - {} ({})".format(dependent_pkg_name, dependent_pkg["target_repo"]))
-            print("         (Adding {} to {} should fix the problem.)".format(
-                ", ".join(dependent_pkg_names),
-                addon_name
-            ))
-
-
-    ### Populate repos
-    for pkg_name, pkg in all_packages.items():
-
-        if pkg["target_repo"]:
-            repo = pkg["target_repo"]
-            pkg["repositories"].append(repo)
-            repos[repo][pkg_name] = pkg
-        
-        for addon in query.settings["addons"]:
-            if addon in pkg["addon_repos"]:
-                repos[addon][pkg_name] = pkg
-                pkg["repositories"].append(addon)
-        
-
-    print("  Done!")
-    print("")
-
-
-    for repo in query.settings["repos"]:
-        _generate_a_flat_list_file(sorted(repos[repo]), repo, query.settings)
-
-
-    print("")
-    print("Results:")
-    print("  baseos: {}".format(len(repos["baseos"])))
-    print("  appstream: {}".format(len(repos["appstream"])))
-
-    for addon in query.settings["addons"]:
-        print("  {addon} : {num}".format(
-            addon=addon,
-            num=len(repos[addon])
-        ))
 
 
 
