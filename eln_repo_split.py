@@ -1,8 +1,18 @@
 #!/usr/bin/python3
 
-import argparse, yaml, tempfile, os, json, datetime, dnf, urllib.request
+import argparse, yaml, tempfile, os, json, datetime, dnf, urllib.request, sys, jinja2, subprocess
 from functools import lru_cache
 
+try:
+    import yaml, jinja2
+except:
+    print("")
+    print("Error: Can't run, missing dependencies.")
+    print("       If you're on Fedora, you can get them by:")
+    print("")
+    print("       $ sudo dnf install python3-jinja2 python3-yaml")
+    print("")
+    sys.exit(1)
 
 
 ###############################################################################
@@ -70,11 +80,13 @@ def load_settings():
     parser.add_argument("configs", help="Directory with YAML configuration files. Only files ending with '.yaml' are accepted.")
     parser.add_argument("output", help="Directory to contain the output.")
     parser.add_argument("--use-cache", dest="use_cache", action='store_true', help="Use local data instead of pulling Content Resolver. Saves a lot of time! Needs a 'cache_data.json' file at the same location as the script is at.")
+    parser.add_argument("--html", dest="html", action='store_true', help="Generate html pages. This needs the 'python3-jinja2' package installed.")
     args = parser.parse_args()
 
     settings["configs"] = args.configs
     settings["output"] = args.output
     settings["use_cache"] = args.use_cache
+    settings["html"] = args.html
 
     settings["allowed_arches"] = ["aarch64","ppc64le","s390x","x86_64"]
 
@@ -563,12 +575,6 @@ def _generate_a_flat_list_file(data_list, file_name, settings):
 
 
 
-    
-
-
-
-
-
 def output_txt_files(query):
 
     log("Generating txt files...")
@@ -594,6 +600,65 @@ def print_summary(query):
         ))
 
 
+
+###############################################################################
+### Generating html pages! ####################################################
+###############################################################################
+
+
+def _generate_html_page(template_name, template_data, page_name, settings):
+    log("Generating the '{page_name}' page...".format(
+        page_name=page_name
+    ))
+
+    output = settings["output"]
+
+    template_loader = jinja2.FileSystemLoader(searchpath="./templates/")
+    template_env = jinja2.Environment(loader=template_loader)
+
+    template = template_env.get_template("{template_name}.html".format(
+        template_name=template_name
+    ))
+
+    if template_data:
+        page = template.render(**template_data)
+    else:
+        page = template.render()
+
+    filename = ("{page_name}.html".format(
+        page_name=page_name.replace(":", "--")
+    ))
+
+    log("  Writing file...  ({filename})".format(
+        filename=filename
+    ))
+    with open(os.path.join(output, filename), "w") as file:
+        file.write(page)
+    
+    log("  Done!")
+    log("")
+
+def generate_pages(query):
+    log("")
+    log("###############################################################################")
+    log("### Generating html pages! ####################################################")
+    log("###############################################################################")
+    log("")
+
+    # Copy static files
+    log("Copying static files...")
+    src_static_dir = os.path.join("templates", "_static")
+    output_static_dir = os.path.join(query.settings["output"])
+    subprocess.run(["cp", "-R", src_static_dir, output_static_dir])
+    log("  Done!")
+    log("")
+
+    # Generate the landing page
+    _generate_html_page("homepage", None, "index", query.settings)
+
+
+
+
 ###############################################################################
 ### Main ######################################################################
 ###############################################################################
@@ -616,6 +681,9 @@ def main():
     output_txt_files(query)
 
     print_summary(query)
+
+    if query.settings["html"]:
+        generate_pages(query)
     
 
     
