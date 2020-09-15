@@ -458,9 +458,7 @@ class Query():
                     self.all_pkgs[pkg_name]["required_by"].update(pkg_required_by)
 
                     # 2/ record for all the other ones that they require this package
-                    for other_pkg_id in pkg_required_by:
-                        other_pkg_name = pkg_id_to_name(other_pkg_id)
-
+                    for other_pkg_name in pkg_required_by:
                         if other_pkg_name not in self.all_pkgs:
                             self._init_new_pkg(other_pkg_name)
                         
